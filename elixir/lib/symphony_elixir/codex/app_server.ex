@@ -75,7 +75,8 @@ defmodule SymphonyElixir.Codex.AppServer do
           auto_approve_requests: auto_approve_requests,
           turn_sandbox_policy: turn_sandbox_policy,
           thread_id: thread_id,
-          workspace: workspace
+          workspace: workspace,
+          worker_host: worker_host
         },
         prompt,
         issue,
@@ -88,7 +89,7 @@ defmodule SymphonyElixir.Codex.AppServer do
         DynamicTool.execute(tool, arguments)
       end)
 
-    case start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
+    case start_turn(port, thread_id, prompt, issue, workspace, worker_host, approval_policy, turn_sandbox_policy) do
       {:ok, turn_id} ->
         session_id = "#{thread_id}-#{turn_id}"
         Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
@@ -301,7 +302,10 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
+  defp start_turn(port, thread_id, prompt, issue, workspace, worker_host, approval_policy, turn_sandbox_policy) do
+    turn_sandbox_policy =
+      direct_land_turn_sandbox_policy(turn_sandbox_policy, issue, workspace, worker_host)
+
     send_message(port, %{
       "method" => "turn/start",
       "id" => @turn_start_id,
@@ -323,6 +327,136 @@ defmodule SymphonyElixir.Codex.AppServer do
     case await_response(port, @turn_start_id) do
       {:ok, %{"turn" => %{"id" => turn_id}}} -> {:ok, turn_id}
       other -> other
+    end
+  end
+
+  defp direct_land_turn_sandbox_policy(turn_sandbox_policy, issue, workspace, worker_host) do
+    if merging_issue?(issue) and workspace_write_policy?(turn_sandbox_policy) do
+      existing_roots = sandbox_policy_value(turn_sandbox_policy, "writableRoots", :writableRoots)
+
+      turn_sandbox_policy
+      |> drop_atom_sandbox_policy_keys()
+      |> Map.put("type", "workspaceWrite")
+      |> Map.put(
+        "writableRoots",
+        merge_writable_roots(
+          existing_roots,
+          direct_land_writable_roots(workspace, worker_host)
+        )
+      )
+      |> Map.put_new("readOnlyAccess", %{"type" => "fullAccess"})
+      |> Map.put("networkAccess", true)
+      |> Map.put_new("excludeTmpdirEnvVar", false)
+      |> Map.put_new("excludeSlashTmp", false)
+    else
+      turn_sandbox_policy
+    end
+  end
+
+  defp merging_issue?(%{state: state}) when is_binary(state) do
+    String.downcase(state) == "merging"
+  end
+
+  defp merging_issue?(%{"state" => state}) when is_binary(state) do
+    String.downcase(state) == "merging"
+  end
+
+  defp merging_issue?(_issue), do: false
+
+  defp workspace_write_policy?(%{"type" => "workspaceWrite"}), do: true
+  defp workspace_write_policy?(%{type: "workspaceWrite"}), do: true
+  defp workspace_write_policy?(_turn_sandbox_policy), do: false
+
+  defp sandbox_policy_value(policy, string_key, atom_key) when is_map(policy) do
+    Map.get(policy, string_key) || Map.get(policy, atom_key)
+  end
+
+  defp drop_atom_sandbox_policy_keys(policy) when is_map(policy) do
+    Enum.reduce(
+      [:type, :writableRoots, :readOnlyAccess, :networkAccess, :excludeTmpdirEnvVar, :excludeSlashTmp],
+      policy,
+      &Map.delete(&2, &1)
+    )
+  end
+
+  defp merge_writable_roots(existing_roots, direct_land_roots) do
+    existing_roots
+    |> writable_root_list()
+    |> Kernel.++(direct_land_roots)
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
+  end
+
+  defp writable_root_list(roots) when is_list(roots), do: roots
+  defp writable_root_list(_roots), do: []
+
+  defp direct_land_writable_roots(workspace, nil) when is_binary(workspace) do
+    [workspace | local_git_metadata_roots(workspace)]
+  end
+
+  defp direct_land_writable_roots(workspace, worker_host)
+       when is_binary(workspace) and is_binary(worker_host) do
+    [workspace]
+  end
+
+  defp direct_land_writable_roots(_workspace, _worker_host), do: []
+
+  defp local_git_metadata_roots(workspace) do
+    git_path = Path.join(workspace, ".git")
+
+    cond do
+      File.dir?(git_path) ->
+        git_path
+        |> metadata_roots_for_git_dir()
+        |> Enum.map(&canonical_or_expanded_path/1)
+
+      File.regular?(git_path) ->
+        workspace
+        |> git_dir_from_file(git_path)
+        |> metadata_roots_for_git_dir()
+        |> Enum.map(&canonical_or_expanded_path/1)
+
+      true ->
+        []
+    end
+  end
+
+  defp git_dir_from_file(workspace, git_file) do
+    with {:ok, contents} <- File.read(git_file),
+         ["gitdir", git_dir] <- String.split(contents, ":", parts: 2),
+         git_dir <- String.trim(git_dir),
+         true <- git_dir != "" do
+      Path.expand(git_dir, workspace)
+    else
+      _ -> nil
+    end
+  end
+
+  defp metadata_roots_for_git_dir(nil), do: []
+
+  defp metadata_roots_for_git_dir(git_dir) when is_binary(git_dir) do
+    [git_dir, git_common_dir(git_dir)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp git_common_dir(git_dir) when is_binary(git_dir) do
+    common_dir_file = Path.join(git_dir, "commondir")
+
+    with true <- File.regular?(common_dir_file),
+         {:ok, contents} <- File.read(common_dir_file),
+         common_dir <- String.trim(contents),
+         true <- common_dir != "" do
+      Path.expand(common_dir, git_dir)
+    else
+      _ -> nil
+    end
+  end
+
+  defp canonical_or_expanded_path(path) when is_binary(path) do
+    case PathSafety.canonicalize(path) do
+      {:ok, canonical_path} -> canonical_path
+      {:error, _reason} -> Path.expand(path)
     end
   end
 

@@ -245,6 +245,7 @@ Use this only when completion is blocked by missing required tools or missing au
 3. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
 4. If approved, human moves the issue to `Merging`.
 5. When the issue is in `Merging`, open and follow `.codex/skills/land/SKILL.md`, then run the `land` skill in a loop until the PR is merged. Do not call `gh pr merge` directly.
+   - `Merging` turns use Symphony's direct-land app-server policy overlay: workspace/Git metadata writable roots plus network access for the configured Git remote, including Bitbucket.
 6. After merge is complete, move the issue to `Done`.
 
 ## Step 4: Rework handling

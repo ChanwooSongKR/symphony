@@ -955,6 +955,9 @@ client to:
   than resending the original issue prompt.
 - Supply the implementation's documented approval and sandbox policy using fields supported by the
   targeted protocol.
+- If an implementation uses an approved merge state where the agent directly lands work, that
+  state's turn sandbox must allow the same executor to write the issue workspace and required Git
+  metadata paths, and to reach the configured Git remote over the network.
 - Include issue-identifying metadata, such as `<issue.identifier>: <issue.title>`, when the targeted
   protocol supports turn or session titles.
 - Advertise implemented client-side tools using the targeted protocol.
