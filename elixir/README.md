@@ -119,6 +119,10 @@ Notes:
 - When `codex.turn_sandbox_policy` is set explicitly, Symphony passes the map through to Codex
   unchanged. Compatibility then depends on the targeted Codex app-server version rather than local
   Symphony validation.
+- When a Linear issue is in `Merging`, Symphony treats the turn as a direct-land executor turn. If
+  the configured turn policy is `workspaceWrite`, Symphony adds the issue workspace and detected Git
+  metadata directories to `writableRoots` and enables `networkAccess` so Git can fetch, commit, and
+  push to remotes such as Bitbucket from the same app-server class used for normal agent turns.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
