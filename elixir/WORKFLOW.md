@@ -32,6 +32,8 @@ codex:
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
   approval_policy: never
   thread_sandbox: workspace-write
+  # Merging turns overlay this workspaceWrite policy with writable issue
+  # workspace/Git metadata roots and network access for direct-land.
   turn_sandbox_policy:
     type: workspaceWrite
 ---

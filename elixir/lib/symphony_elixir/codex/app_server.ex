@@ -75,7 +75,8 @@ defmodule SymphonyElixir.Codex.AppServer do
           auto_approve_requests: auto_approve_requests,
           turn_sandbox_policy: turn_sandbox_policy,
           thread_id: thread_id,
-          workspace: workspace
+          workspace: workspace,
+          worker_host: worker_host
         },
         prompt,
         issue,
@@ -87,6 +88,9 @@ defmodule SymphonyElixir.Codex.AppServer do
       Keyword.get(opts, :tool_executor, fn tool, arguments ->
         DynamicTool.execute(tool, arguments)
       end)
+
+    turn_sandbox_policy =
+      turn_sandbox_policy_for_issue(turn_sandbox_policy, issue, workspace, worker_host)
 
     case start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
       {:ok, turn_id} ->
@@ -300,6 +304,84 @@ defmodule SymphonyElixir.Codex.AppServer do
         other
     end
   end
+
+  defp turn_sandbox_policy_for_issue(%{"type" => "workspaceWrite"} = policy, issue, workspace, worker_host) do
+    if merging_issue?(issue) do
+      policy
+      |> Map.put("networkAccess", true)
+      |> Map.put_new("readOnlyAccess", %{"type" => "fullAccess"})
+      |> Map.put_new("excludeTmpdirEnvVar", false)
+      |> Map.put_new("excludeSlashTmp", false)
+      |> merge_writable_roots(direct_land_writable_roots(workspace, worker_host))
+    else
+      policy
+    end
+  end
+
+  defp turn_sandbox_policy_for_issue(policy, _issue, _workspace, _worker_host), do: policy
+
+  defp merging_issue?(issue) when is_map(issue) do
+    case Map.get(issue, :state) || Map.get(issue, "state") do
+      state when is_binary(state) ->
+        state
+        |> String.trim()
+        |> String.downcase()
+        |> Kernel.==("merging")
+
+      _ ->
+        false
+    end
+  end
+
+  defp merging_issue?(_issue), do: false
+
+  defp direct_land_writable_roots(workspace, worker_host) do
+    [workspace, git_metadata_root(workspace, worker_host)]
+    |> Enum.filter(&valid_writable_root?/1)
+    |> Enum.uniq()
+  end
+
+  defp merge_writable_roots(policy, roots) when is_map(policy) and is_list(roots) do
+    configured_roots = normalize_writable_roots(Map.get(policy, "writableRoots"))
+
+    Map.put(policy, "writableRoots", Enum.uniq(configured_roots ++ roots))
+  end
+
+  defp normalize_writable_roots(roots) when is_list(roots), do: Enum.filter(roots, &valid_writable_root?/1)
+  defp normalize_writable_roots(root) when is_binary(root), do: [root]
+  defp normalize_writable_roots(_roots), do: []
+
+  defp valid_writable_root?(root), do: is_binary(root) and String.trim(root) != ""
+
+  defp git_metadata_root(workspace, nil) when is_binary(workspace) do
+    with executable when is_binary(executable) <- System.find_executable("git"),
+         {output, 0} <- System.cmd(executable, ["-C", workspace, "rev-parse", "--absolute-git-dir"], stderr_to_stdout: true),
+         git_dir when git_dir != "" <- String.trim(output) do
+      case PathSafety.canonicalize(git_dir) do
+        {:ok, canonical_git_dir} -> canonical_git_dir
+        {:error, _reason} -> git_dir
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  defp git_metadata_root(workspace, worker_host) when is_binary(workspace) and is_binary(worker_host) do
+    command = "git -C #{shell_escape(workspace)} rev-parse --absolute-git-dir"
+
+    case SSH.run(worker_host, command, stderr_to_stdout: true) do
+      {:ok, {output, 0}} ->
+        case String.trim(output) do
+          "" -> nil
+          git_dir -> git_dir
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp git_metadata_root(_workspace, _worker_host), do: nil
 
   defp start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
     send_message(port, %{

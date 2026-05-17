@@ -183,6 +183,111 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server expands workspaceWrite sandbox policy for Merging direct-land" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-merging-policy-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-1002")
+      git_metadata = Path.join(test_root, "git-metadata")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-merging-policy.trace")
+      git = System.find_executable("git") || flunk("git executable required")
+      previous_trace = System.get_env("SYMP_TEST_DIRECT_LAND_TRACE")
+
+      on_exit(fn ->
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_DIRECT_LAND_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_DIRECT_LAND_TRACE")
+        end
+      end)
+
+      System.put_env("SYMP_TEST_DIRECT_LAND_TRACE", trace_file)
+      File.mkdir_p!(workspace)
+
+      assert {_output, 0} =
+               System.cmd(git, ["init", "--separate-git-dir", git_metadata, workspace], stderr_to_stdout: true)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_DIRECT_LAND_TRACE:-/tmp/codex-merging-policy.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1002"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1002"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_turn_sandbox_policy: %{type: "workspaceWrite"}
+      )
+
+      issue = %Issue{
+        id: "issue-merging-policy",
+        identifier: "MT-1002",
+        title: "Validate Merging direct-land policy",
+        description: "Ensure Merging can write Git metadata and reach remotes",
+        state: "Merging",
+        url: "https://example.org/issues/MT-1002",
+        labels: ["backend"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Land the approved branch", issue)
+
+      turn_start_payload =
+        trace_file
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.map(fn "JSON:" <> json -> Jason.decode!(json) end)
+        |> Enum.find(fn payload -> payload["method"] == "turn/start" end)
+
+      sandbox_policy = get_in(turn_start_payload, ["params", "sandboxPolicy"])
+
+      assert {:ok, canonical_workspace} = SymphonyElixir.PathSafety.canonicalize(workspace)
+      assert {:ok, canonical_git_metadata} = SymphonyElixir.PathSafety.canonicalize(git_metadata)
+
+      assert sandbox_policy == %{
+               "type" => "workspaceWrite",
+               "writableRoots" => [canonical_workspace, canonical_git_metadata],
+               "readOnlyAccess" => %{"type" => "fullAccess"},
+               "networkAccess" => true,
+               "excludeTmpdirEnvVar" => false,
+               "excludeSlashTmp" => false
+             }
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server marks request-for-input events as a hard failure" do
     test_root =
       Path.join(

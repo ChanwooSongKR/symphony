@@ -117,8 +117,11 @@ Notes:
 - Supported `codex.approval_policy` values depend on the targeted Codex app-server version. In the current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
 - Supported `codex.thread_sandbox` values: `read-only`, `workspace-write`, `danger-full-access`.
 - When `codex.turn_sandbox_policy` is set explicitly, Symphony passes the map through to Codex
-  unchanged. Compatibility then depends on the targeted Codex app-server version rather than local
-  Symphony validation.
+  unchanged for normal agent turns. For issues in the `Merging` state, the Elixir implementation
+  overlays `workspaceWrite` turn policies with writable roots for the issue workspace and resolved
+  Git metadata directory, plus `networkAccess: true`, so direct-land can fetch, commit, and push.
+  Compatibility then depends on the targeted Codex app-server version rather than local Symphony
+  validation.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue

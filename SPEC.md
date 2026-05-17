@@ -955,6 +955,9 @@ client to:
   than resending the original issue prompt.
 - Supply the implementation's documented approval and sandbox policy using fields supported by the
   targeted protocol.
+- Apply any documented state-specific sandbox policy overlays before starting the turn. For example,
+  an implementation can add direct-land Git metadata write roots and network access for approved
+  work in a merge/landing state.
 - Include issue-identifying metadata, such as `<issue.identifier>: <issue.title>`, when the targeted
   protocol supports turn or session titles.
 - Advertise implemented client-side tools using the targeted protocol.
